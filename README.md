@@ -1,4 +1,4 @@
-# ⚔️ RabbitMQ Stack — Imersão em Arquiteturas Event-Driven com IA
+# 🐇 RabbitMQ
 
 Seja bem-vindo ao ambiente de criação da **Stack de Mensageria Resiliente**, utilizando uma **IA de Mentoria** para guiar o aprendizado em Python, FastAPI, Pika (RabbitMQ) e Docker Compose.
 
