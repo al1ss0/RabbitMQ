@@ -2,73 +2,71 @@
 
 Saudações, Padawan! A API e o seu Worker em rede local conversando e persistindo dados já estão! Orgulhoso do seu progresso na força eu estou, sim! No entanto, na Engenharia de Software profissional de elite, código sem **Testes Automatizados** considerado pronto nunca é!
 
-Graças à nossa arquitetura em camadas do **DDD**, testar a lógica do domínio extremamente simples e rápido será, pois ela acoplamento físico com o RabbitMQ ou bancos concretos não possui! E para testarmos a infraestrutura e as rotas da nossa API sem dependermos do Broker ligado em rede, fixtures de **Mocking** profissional nós criaremos!
+Graças à nossa arquitetura em camadas do **DDD**, testar a lógica do domínio extremamente simples e rápido será, pois ela acoplamento físico com o RabbitMQ ou bancos concretos não possui! E para testarmos a infraestrutura e as rotas da nossa API sem dependermos do Broker ou banco físico ligados, fixtures de **Mocking** e bancos SQLite em memória ou temporários nós criaremos!
 
 ---
 
 ## 🏗️ 1. Estruturando a Pasta de Testes
 
-No ecossistema unificado sincronizado com o `uv`, criaremos a nossa suite estruturando a pasta de testes de forma idêntica à referência, mas mantendo todas as fixtures mockadas de forma centralizada e limpa na raiz de `tests/conftest.py`:
+No ecossistema unificado sincronizado com o `uv`, criaremos a nossa suite de testes. A estrutura completa e profissional de testes da nossa aplicação robusta idêntica à referência estar deve:
 
 ```
 rabbitmq-stack/
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py          # Todas as fixtures globais unificadas (Mocks de Pika, FastAPI e SQLite)
+│   ├── conftest.py              # Fixtures globais de conexão/canal mockados
 │   ├── api/
 │   │   ├── __init__.py
+│   │   ├── conftest.py          # Fixtures da API (test_client com DB temporário compartilhado)
 │   │   ├── domain/
 │   │   │   ├── __init__.py
-│   │   │   ├── test_models.py       # Testes unitários do modelo Pydantic
-│   │   │   └── test_repository.py   # Testes de integração do repositório da API
+│   │   │   ├── test_models.py       # Testes unitários do modelo Pydantic da API
+│   │   │   └── test_repository.py   # Testes unitários do repositório da API (leitura/lista SQLite)
 │   │   ├── infra/
 │   │   │   ├── __init__.py
-│   │   │   ├── test_database.py     # Testes das transações do SQLite
-│   │   │   ├── test_publisher.py    # Testes do publicador AMQP da API
-│   │   │   ├── test_settings.py     # Testes da configuração da API
-│   │   │   └── test_topology.py     # Testes da topologia AMQP da API
-│   │   └── test_main.py             # Testes de rotas e integração HTTP mockada
+│   │   │   ├── test_database.py     # Testes da conexão e inicialização do SQLite na API
+│   │   │   ├── test_publisher.py    # Testes de publicação de mensagens no RabbitMQ
+│   │   │   ├── test_settings.py     # Testes de carregamento das configurações da API
+│   │   │   └── test_topology.py     # Testes de setup da topologia AMQP
+│   │   └── test_main.py             # Testes de integração das rotas HTTP (TestClient + Mocks)
 │   └── worker/
 │       ├── __init__.py
+│       ├── conftest.py          # Fixtures do Worker (mock do handler, payloads e delivery tags)
 │       ├── domain/
 │       │   ├── __init__.py
-│       │   ├── test_models.py       # Testes unitários do Dataclass do Worker
-│       │   ├── test_handler.py      # Testes do processador de casos de uso (Handler)
-│       │   └── test_repository.py   # Testes do repositório SQLite do Worker
+│       │   ├── test_handler.py      # Testes unitários do PedidoHandler (casos de uso)
+│       │   ├── test_models.py       # Testes unitários da Dataclass do Worker
+│       │   └── test_repository.py   # Testes unitários do repositório do Worker (escrita SQLite)
 │       ├── infra/
 │       │   ├── __init__.py
-│       │   ├── test_consumer.py     # Testes de consumo de mensagens do Worker
-│       │   ├── test_database.py     # Testes do SQLite do Worker
-│       │   ├── test_settings.py     # Testes das configurações do Worker
-│       │   └── test_topology.py     # Testes da topologia no Worker
-│       └── test_main.py             # Testes de inicialização da execução principal
+│       │   ├── test_consumer.py     # Testes de consumo, tratamento de erros e acks/nacks
+│       │   ├── test_database.py     # Testes de conexão SQLite do Worker
+│       │   ├── test_settings.py     # Testes de carregamento das configurações do Worker
+│       │   └── test_topology.py     # Testes de setup da topologia AMQP no Worker
+│       └── test_main.py             # Testes de inicialização e tratamento gracioso do Worker
 ```
-
 
 ---
 
-## 🛠️ 2. As Fixtures Globais e Mocks (`tests/conftest.py`)
+## 🛠️ 2. Fixtures Globais e Específicas do pytest
 
-O arquivo `conftest.py` na raiz é um arquivo especial do `pytest` utilizado para declarar todas as fixtures (funções auxiliares, mocks do Pika, injeção do TestClient do FastAPI com banco em memória física isolada e mocks do Handler) que estarão disponíveis para todos os testes da suite de forma implícita. Isso garante que nenhum teste toque em recursos físicos do ambiente de produção e que o banco SQLite seja efêmero e gerado dinamicamente para cada teste.
+O `pytest` utiliza arquivos `conftest.py` para injetar dependências e mocks (fixtures) nos testes de forma limpa e modular. Criaremos as fixtures globais e locais da API e do Worker.
 
-Crie o arquivo [tests/conftest.py](file:///tests/conftest.py) contendo a especificação unificada abaixo:
+### 🌎 Fixture Global (`tests/conftest.py`)
+Aqui mockaremos a biblioteca `pika` para que nenhuma conexão real seja disparada em testes unitários ou de integração básicos, e limparemos o cache das configurações de settings para evitar contaminação entre os testes.
+
+Crie o arquivo [tests/conftest.py](file:///tests/conftest.py):
 
 ```python
 from collections.abc import Generator
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pika
 import pytest
-from fastapi.testclient import TestClient
 from pika.adapters.blocking_connection import BlockingChannel
-from pika.spec import Basic
 from pytest_mock import MockerFixture
 
-from api.domain.repository import PedidoRepository
 from api.infra.settings import get_settings as api_get_settings
-from api.main import app
-from worker.domain.handler import MessageHandler
 from worker.infra.settings import get_settings as worker_get_settings
 
 
@@ -89,14 +87,36 @@ def mock_channel(mocker: MockerFixture) -> MagicMock:
 @pytest.fixture
 def mock_connection(mocker: MockerFixture, mock_channel: MagicMock) -> MagicMock:
     conn = mocker.MagicMock(spec=pika.BlockingConnection)
-    conn.is_open = True
     conn.channel.return_value = mock_channel
     return conn
+```
+
+### 🔌 Fixtures Específicas da API (`tests/api/conftest.py`)
+Para testarmos as rotas da API, precisamos de um banco de dados SQLite temporário e de um `TestClient` configurado com mocks apropriados do RabbitMQ para não disparar conexões reais.
+
+Crie o arquivo [tests/api/conftest.py](file:///tests/api/conftest.py):
+
+```python
+from collections.abc import Generator
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pika
+import pytest
+from fastapi.testclient import TestClient
+from pytest_mock import MockerFixture
+
+from api.domain.repository import PedidoRepository
+from api.main import app
 
 
 @pytest.fixture
 def shared_db(tmp_path: Path) -> Path:
-    """Caminho do banco SQLite compartilhado entre API e Worker dentro do mesmo teste."""
+    """Caminho do banco SQLite compartilhado entre API e Worker dentro do mesmo teste.
+
+    Tanto o fixture `test_client` quanto os testes que precisam popular o banco
+    via WorkerRepo devem usar este fixture — o acoplamento fica explícito.
+    """
     return tmp_path / "test.db"
 
 
@@ -117,6 +137,21 @@ def test_client(
 
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
+```
+
+### ⚙️ Fixtures Específicas do Worker (`tests/worker/conftest.py`)
+No Worker, precisamos testar o comportamento do consumo e handlers com payloads válidos e mocks de canais de entrega.
+
+Crie o arquivo [tests/worker/conftest.py](file:///tests/worker/conftest.py):
+
+```python
+from unittest.mock import MagicMock
+
+import pytest
+from pika.spec import Basic
+from pytest_mock import MockerFixture
+
+from worker.domain.handler import MessageHandler
 
 
 @pytest.fixture
@@ -138,86 +173,141 @@ def mock_method(mocker: MockerFixture) -> MagicMock:
 
 ---
 
-## 🧠 3. Testes Unitários de Domínio (`tests/api/` & `tests/worker/`)
+## 🧠 3. Testes Unitários de Domínio
 
-O Domínio deve ser testado isoladamente de forma rápida. Validaremos as regras de negócio declaradas no Pydantic da API, as do `@dataclass(frozen=True)` do Worker e a lógica do caso de uso (`PedidoHandler`).
+Os testes unitários focam na lógica pura do domínio da nossa aplicação. Eles devem ser rápidos e independentes de serviços de infraestrutura.
 
-### 📝 Teste do Modelo Pydantic (`tests/api/domain/test_models.py`)
-Crie o arquivo [tests/api/domain/test_models.py](file:///tests/api/domain/test_models.py) para certificar que o valor negativo ou nulo barreado de forma correta pelo validador do Pydantic será:
+### 📝 Teste do Modelo Pydantic da API (`tests/api/domain/test_models.py`)
+Validaremos as regras de negócio declaradas no Pydantic da API.
+
+Crie o arquivo [tests/api/domain/test_models.py](file:///tests/api/domain/test_models.py):
 
 ```python
 import pytest
 from pydantic import ValidationError
 
-from api.domain.models import Pedido
+from api.domain.models import Pedido, PedidoResponse
 
 
-def test_criar_pedido_valido():
-    pedido = Pedido(id="1", descricao="Sabre de Luz", valor=1500.0)
-    assert pedido.id == "1"
-    assert pedido.valor == 1500.0
-    assert pedido.status == "PENDENTE"
+@pytest.mark.unit
+def test_pedido_cria_com_campos_validos() -> None:
+    p = Pedido(id="1", descricao="Notebook", valor=3500.0)
+    assert p.id == "1"
+    assert p.descricao == "Notebook"
+    assert p.valor == 3500.0
+    assert p.status == "PENDENTE"
 
 
-def test_pedido_com_valor_invalido_deve_lancar_erro():
-    with pytest.raises(ValidationError) as exc_info:
-        Pedido(id="2", descricao="Item inválido", valor=-10.0)
+@pytest.mark.unit
+def test_pedido_status_default_pendente() -> None:
+    p = Pedido(id="1", descricao="Produto", valor=10.0)
+    assert p.status == "PENDENTE"
 
-    assert "valor deve ser positivo" in str(exc_info.value)
+
+@pytest.mark.unit
+@pytest.mark.parametrize("valor", [0.0, -1.0, -100.0])
+def test_pedido_valor_nao_positivo_levanta_validation_error(valor: float) -> None:
+    with pytest.raises(ValidationError):
+        Pedido(id="1", descricao="Produto", valor=valor)
+
+
+@pytest.mark.unit
+def test_pedido_response_cria_com_campos_corretos() -> None:
+    r = PedidoResponse(mensagem="Pedido enfileirado", pedido_id="42")
+    assert r.mensagem == "Pedido enfileirado"
+    assert r.pedido_id == "42"
 ```
 
 ### 📝 Teste do Dataclass do Worker (`tests/worker/domain/test_models.py`)
-Crie o arquivo [tests/worker/domain/test_models.py](file:///tests/worker/domain/test_models.py) validando o comportamento da dataclass imutável:
+Certificaremos que o nosso `@dataclass(frozen=True)` do Worker se comporta como uma entidade imutável de domínio.
+
+Crie o arquivo [tests/worker/domain/test_models.py](file:///tests/worker/domain/test_models.py):
 
 ```python
+from dataclasses import FrozenInstanceError
+
+import pytest
+
 from worker.domain.models import Pedido
 
 
-def test_criar_pedido_dataclass():
-    pedido = Pedido(
-        id="1", descricao="Notebook ASUS", valor=3500.0, status="processado"
-    )
-    assert pedido.id == "1"
-    assert pedido.status == "processado"
+@pytest.mark.unit
+def test_pedido_cria_com_campos_corretos() -> None:
+    p = Pedido(id="1", descricao="Produto", valor=10.0, status="PENDENTE")
+    assert p.id == "1"
+    assert p.descricao == "Produto"
+    assert p.valor == 10.0
+    assert p.status == "PENDENTE"
+
+
+@pytest.mark.unit
+def test_pedido_e_imutavel() -> None:
+    p = Pedido(id="1", descricao="Produto", valor=10.0, status="PENDENTE")
+    with pytest.raises(FrozenInstanceError):
+        p.status = "processado"  # type: ignore[misc]
 ```
 
-### 📝 Teste do Caso de Uso / Handler (`tests/worker/domain/test_handler.py`)
-Como o nosso `PedidoHandler` recebe uma dependência do repositório, podemos passar um mock cirúrgico dele sem tocar em bancos SQLite físicos durante os testes unitários.
+### 📝 Teste do Caso de Uso / Handler do Worker (`tests/worker/domain/test_handler.py`)
+O `PedidoHandler` gerencia o ciclo do negócio e delega a gravação física ao `PedidoRepository`. Testaremos ele injetando um mock do repositório.
 
-Crie o arquivo [tests/worker/domain/test_handler.py](file:///tests/worker/domain/test_handler.py) com o código abaixo:
+Crie o arquivo [tests/worker/domain/test_handler.py](file:///tests/worker/domain/test_handler.py):
 
 ```python
-from unittest.mock import Mock
+import pytest
+from pytest_mock import MockerFixture
 
 from worker.domain.handler import PedidoHandler
 from worker.domain.models import Pedido
 from worker.domain.repository import PedidoRepository
 
 
-def test_handler_processa_pedido_com_sucesso():
-    # 1. Criar mock do repositório
-    mock_repo = Mock(spec=PedidoRepository)
-    handler = PedidoHandler(mock_repo)
+@pytest.fixture
+def repository(mocker: MockerFixture) -> PedidoRepository:
+    return mocker.MagicMock(spec=PedidoRepository)
 
-    pedido = Pedido(id="1", descricao="Notebook ASUS", valor=3500.0, status="pendente")
 
-    # 2. Executa o Handler
+@pytest.fixture
+def pedido() -> Pedido:
+    return Pedido(id="1", descricao="Teste", valor=10.0, status="PENDENTE")
+
+
+@pytest.mark.unit
+def test_pedido_handler_chama_save_com_status_processado(
+    mocker: MockerFixture,
+    repository: PedidoRepository,
+    pedido: Pedido,
+) -> None:
+    mocker.patch("worker.domain.handler.time.sleep")
+    handler = PedidoHandler(repository)
     handler.handle(pedido)
 
-    # 3. Assegura que o repositório concreto de salvamento foi invocado
-    mock_repo.save.assert_called_once()
-    pedido_salvo = mock_repo.save.call_args[0][0]
-    assert pedido_salvo.id == "1"
+    repository.save.assert_called_once()
+    pedido_salvo = repository.save.call_args.args[0]
     assert pedido_salvo.status == "processado"
+    assert pedido_salvo.id == pedido.id
+
+
+@pytest.mark.unit
+def test_pedido_handler_repositorio_exception_propagada(
+    mocker: MockerFixture,
+    repository: PedidoRepository,
+    pedido: Pedido,
+) -> None:
+    mocker.patch("worker.domain.handler.time.sleep")
+    repository.save.side_effect = RuntimeError("Falha no repositório")
+    handler = PedidoHandler(repository)
+
+    with pytest.raises(RuntimeError, match="Falha no repositório"):
+        handler.handle(pedido)
 ```
 
 ---
 
 ## 🛠️ 4. Testes de Integração da API HTTP (`tests/api/test_main.py`)
 
-Para testar as rotas da API FastAPI de ponta a ponta sem disparar conexões físicas com o RabbitMQ ou SQLite real, utilizaremos o fixture `test_client` que criamos na raiz do `conftest.py`. Como ele já injeta os mocks e o banco SQLite efêmero de teste de forma nativa e isolada, nossos testes de rotas tornam-se extremamente concisos, legíveis e rápidos de escrever!
+Para testar as rotas da API FastAPI de ponta a ponta, utilizaremos a fixture `test_client` definida em `tests/api/conftest.py` para isolar a infraestrutura real e interagir com o SQLite compartilhado em memória/temporário.
 
-Crie o arquivo [tests/api/test_main.py](file:///tests/api/test_main.py) com o código abaixo:
+Crie o arquivo [tests/api/test_main.py](file:///tests/api/test_main.py):
 
 ```python
 from pathlib import Path
@@ -302,13 +392,32 @@ def test_get_pedido_existente(test_client: TestClient, shared_db: Path) -> None:
 def test_get_pedido_inexistente(test_client: TestClient) -> None:
     response = test_client.get("/pedidos/nao-existe")
     assert response.status_code == 404
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("campo", "valor"),
+    [
+        ("valor", 0),
+        ("valor", -1),
+        ("id", None),
+        ("descricao", None),
+    ],
+)
+def test_post_pedido_payload_invalido(
+    test_client: TestClient, campo: str, valor: object
+) -> None:
+    payload: dict[str, object] = {"id": "99", "descricao": "Produto", "valor": 10.0}
+    payload[campo] = valor
+    response = test_client.post("/pedidos/", json=payload)
+    assert response.status_code == 422
 ```
 
 ---
 
 ## 🚀 5. Executando os Testes e Verificando Cobertura
 
-1. Suite de testes configurada e sincronizada você tem.
+1. Suite de testes configurada e sincronizada você tem!
 2. Execute todos os testes a partir do terminal na raiz do workspace executando a tarefa rápida do `taskipy`:
    ```bash
    uv run task test
@@ -317,7 +426,7 @@ def test_get_pedido_inexistente(test_client: TestClient) -> None:
    ```bash
    uv run task test-cov
    ```
-4. Verifique que todos os testes reportaram o status verde **PASSED** com cobertura mínima recomendada de 95%!
+4. Verifique que todos os testes reportaram o status verde **PASSED** com cobertura mínima de 95%!
 
 ---
 
