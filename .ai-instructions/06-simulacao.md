@@ -1,16 +1,141 @@
-# 🚀 Passo 6/6: Simulação de Carga, Monitoramento e Documentação
+# 🚀 Passo 6/6: Conteinerização Integrada, Simulação Sob Carga & Documentação Premium
 
-Parabéns pela resiliência, Padawan! Você chegou ao último passo. Sua stack está totalmente codificada, orquestrada via Docker Compose e testada com sucesso.
+Parabéns pela resiliência, Padawan! Você chegou ao último passo da nossa jornada. Suas aplicações (API e Worker) estão totalmente codificadas e validadas localmente com uma suite rica de testes automatizados.
 
-Agora, você aprenderá a validar o comportamento do sistema sob carga, monitorar a topologia e métricas do broker através da API de Gerenciamento do RabbitMQ e documentar seu projeto com maestria.
+Agora, nosso objetivo é envelopar toda a nossa aplicação em containers de produção usando **Dockerfiles** otimizados e atualizar o **Docker Compose** para orquestrar a stack completa integrada em uma rede privada isolada de produção. Para finalizar, simularemos o comportamento em lote sob carga de concorrência, verificaremos a resiliência e documentaremos o seu projeto de forma premium.
 
 ---
 
-## 📡 1. Testando via REST Client (`requests.http`)
+## 🐳 1. Criando os Dockerfiles de Produção
 
-Para interagir com a sua stack sem precisar de um navegador ou terminal complexo, crie um arquivo chamado `requests.http` na raiz do seu projeto. Esse arquivo pode ser executado diretamente no VS Code com a extensão *REST Client*.
+Cada aplicação Python (`api` e `worker`) deve conter o seu próprio `Dockerfile` otimizado. Usaremos imagens baseadas em `python:3.12-slim` para garantir leveza, segurança e velocidade.
 
-Ele cobrirá testes da API FastAPI e também chamadas na **Management HTTP API** do RabbitMQ (que expõe métricas das filas em tempo real).
+### 📝 Dockerfile da API (`api/Dockerfile`)
+Crie o arquivo [api/Dockerfile](file:///api/Dockerfile) com a especificação de produção:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Evita que o Python grave arquivos .pyc no disco e ativa o buffer de logs
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### 📝 Dockerfile do Worker (`worker/Dockerfile`)
+Crie o arquivo [worker/Dockerfile](file:///worker/Dockerfile) de produção:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+---
+
+## 🏗️ 2. O Docker Compose Integrado e Resiliente
+
+Com os Dockerfiles criados, vamos atualizar o nosso arquivo `docker-compose.yml` localizado na raiz do projeto. Ele passará a gerenciar os 3 serviços integrados em uma rede virtual bridge.
+
+Substituiremos a variável de conexão `RABBITMQ_HOST` para `rabbitmq-broker` para que a API e o Worker conversem usando a rede interna do Docker. Também utilizaremos a diretiva de **Healthcheck** para garantir que a API e o Worker iniciem apenas quando o Broker do RabbitMQ estiver de fato pronto para receber conexões AMQP.
+
+Atualize o arquivo [docker-compose.yml](file:///docker-compose.yml) com a orquestração integrada:
+
+```yaml
+version: '3.8'
+
+services:
+  rabbitmq-broker:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rabbitmq-broker
+    ports:
+      - "5672:5672"     # Porta AMQP
+      - "15672:15672"   # Porta do Painel Administrativo Web
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rabbitmq-network
+
+  api-produtor:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: api-produtor
+    ports:
+      - "8000:8000"
+    environment:
+      - RABBITMQ_HOST=rabbitmq-broker
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASS=guest
+    depends_on:
+      rabbitmq-broker:
+        condition: service_healthy  # Garante startup seguro pós-inicialização do Broker!
+    volumes:
+      - ./data:/app/data            # Volume compartilhado para persistência física
+    networks:
+      - rabbitmq-network
+
+  worker-consumidor:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: worker-consumidor
+    environment:
+      - RABBITMQ_HOST=rabbitmq-broker
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASS=guest
+    depends_on:
+      rabbitmq-broker:
+        condition: service_healthy  # Garante startup seguro pós-inicialização do Broker!
+    volumes:
+      - ./data:/app/data            # Volume compartilhado para persistência física
+    networks:
+      - rabbitmq-network
+
+networks:
+  rabbitmq-network:
+    driver: bridge
+```
+
+### 🚀 Subindo a Stack Completa
+Execute o comando na raiz para compilar os Dockerfiles e subir o ecossistema integrado:
+```bash
+docker compose up --build -d
+```
+
+---
+
+## 📡 3. Testando via REST Client (`requests.http`)
+
+Para simularmos carga concorrente de produção, crie um arquivo chamado `requests.http` na raiz do projeto. Ele permite rodar requisições HTTP em lote e monitorar as métricas da API administrativa do RabbitMQ:
 
 ```http
 ### Variáveis globais
@@ -19,83 +144,72 @@ Ele cobrirá testes da API FastAPI e também chamadas na **Management HTTP API**
 @rmq_auth = Basic guest guest
 
 # =============================================================================
-# 1. Testando a API Produtora FastAPI
+# 1. Requisições na API Produtora FastAPI Conteinerizada
 # =============================================================================
 
-### 🟢 Health check
+### 🟢 Health check da API
 GET {{api}}/health
 
 ###
 
-### 🔵 Criar Pedido Válido (HTTP 202 - Aceito e Enfileirado)
+### 🔵 Enviar Pedido Válido (HTTP 202 - Enfileirado)
 POST {{api}}/pedidos/
 Content-Type: application/json
 
 {
-  "id": "1",
-  "descricao": "Notebook Gamer Core i7",
-  "valor": 4500.00
+  "id": "ped-prod-100",
+  "descricao": "Sabre de Luz Vermelho",
+  "valor": 1900.00
 }
 
 ###
 
-### 🔴 Criar Pedido com Valor Inválido (HTTP 422 - Rejeitado pela API/Pydantic)
+### 🔴 Enviar Pedido Inválido (HTTP 422 - Rejeitado no Pydantic)
 POST {{api}}/pedidos/
 Content-Type: application/json
 
 {
-  "id": "2",
-  "descricao": "Mouse Pad",
-  "valor": -15.00
+  "id": "ped-prod-101",
+  "descricao": "Filtro de Ar Estelar",
+  "valor": -5.00
 }
 
 ###
 
-### 🟡 Criar Pedido com Descrição Inválida (HTTP 202 aceito na API, mas deve ir para a DLX pelo Worker)
+### 🟡 Enviar Pedido com Erro de Domínio (HTTP 202 aceito na API -> Enviado para DLX no Worker)
 POST {{api}}/pedidos/
 Content-Type: application/json
 
 {
-  "id": "3",
+  "id": "ped-prod-102",
   "descricao": "item inválido",
-  "valor": 100.00
+  "valor": 120.00
 }
 
 ###
 
-### 🚀 Simular Concorrência: Enviar Pedidos em Lote (Fair Dispatch)
+### 🚀 Simular Lote para Testar Fair Dispatch (Concorrência)
 POST {{api}}/pedidos/
 Content-Type: application/json
 
-{
-  "id": "10",
-  "descricao": "Teclado Mecânico 10",
-  "valor": 320.0
-}
+{ "id": "ped-lote-1", "descricao": "Cristal Kyber Verde", "valor": 300.0 }
 ###
 POST {{api}}/pedidos/
 Content-Type: application/json
 
-{
-  "id": "11",
-  "descricao": "Headset Gamer 11",
-  "valor": 450.0
-}
+{ "id": "ped-lote-2", "descricao": "Cristal Kyber Azul", "valor": 300.0 }
 ###
 POST {{api}}/pedidos/
 Content-Type: application/json
 
-{
-  "id": "12",
-  "descricao": "Cadeira Ergonômica 12",
-  "valor": 1200.0
-}
+{ "id": "ped-lote-3", "descricao": "Cristal Kyber Roxo", "valor": 350.0 }
+
 
 # =============================================================================
-# 2. Consultando Métricas e Topologia via API do RabbitMQ
+# 2. Consultando a API Administrativa do RabbitMQ
 # =============================================================================
 
-### 📊 Visão geral de todas as filas
+### 📊 Visão Geral de Filas
 GET {{rmq}}/queues
 Authorization: {{rmq_auth}}
 
@@ -110,43 +224,28 @@ Authorization: {{rmq_auth}}
 ### 📉 Métricas da Fila de Erros (dlx_pedidos)
 GET {{rmq}}/queues/%2F/dlx_pedidos
 Authorization: {{rmq_auth}}
-
-###
-
-### 🔗 Bindings declarados entre Exchange e Fila
-GET {{rmq}}/bindings/%2F/e/pedidos_exchange/q/pedidos_queue
-Authorization: {{rmq_auth}}
 ```
 
 ---
 
-## 📝 2. Estruturando a Documentação (`README.md`)
+## 📝 4. Documentação Premium (`README.md`)
 
-Todo grande arquiteto de software documenta o seu trabalho para que outros desenvolvedores possam executá-lo sem fricção. Seu `README.md` final deve ser extremamente premium e deve conter:
-
-1. **Visão Geral e Arquitetura**: O diagrama de sequência e a explicação do fluxo assíncrono.
-2. **Instruções de Inicialização**:
-   - Como sincronizar dependências locais via `uv sync`.
-   - Como subir o ambiente completo: `docker compose up --build`.
-3. **Simulação Prática Passo a Passo**:
-   - Como abrir os logs do worker em tempo real para assistir o consumo (`docker logs -f worker-consumidor`).
-   - Como submeter os requests de teste descritos no arquivo `requests.http`.
-   - Como verificar o painel visual administrativo do RabbitMQ em `http://localhost:15672` com credenciais `guest/guest`.
-4. **Comportamento de Escalabilidade**:
-   - Instrução de como escalar múltiplos consumidores paralelos para demonstrar o *Fair Dispatch* em ação:
-     ```bash
-     docker compose up --scale worker-consumidor=3 -d
-     ```
-5. **Comportamento de Falha (DLX)**:
-   - Explicação de como o request de "item inválido" gera uma exceção no worker, que envia `basic_nack(requeue=False)` e direciona a mensagem automaticamente para a Dead Letter Queue (`dlx_pedidos`).
+Crie o arquivo [README.md](file:///README.md) definitivo do seu projeto na raiz, contendo:
+1. **Visão Geral e Arquitetura**: O diagrama de sequência e o mapeamento de diretórios do DDD.
+2. **Instruções de Inicialização**: O comando `docker compose up --build -d`.
+3. **Simulação Prática**: Como testar usando o `requests.http`.
+4. **Comportamento de Escalar Consumidores**: Como rodar o comando para escalar o processamento paralelo em 3 workers, assistindo a distribuição equilibrada via Fair Dispatch:
+   ```bash
+   docker compose up --scale worker-consumidor=3 -d
+   ```
+5. **Logs em Tempo Real**: `docker logs -f worker-consumidor` para visualizar os logs de ACKs e NACKs ocorrendo.
 
 ---
 
 ### 🧙‍♂️ Instruções do Mestre:
-Crie o arquivo `requests.http` e elabore o seu `README.md` explicativo contendo todos os passos e cenários da simulação. 
+Crie os Dockerfiles, configure o Docker Compose integrado completo, execute a simulação sob carga e elabore a documentação final.
 
 > [!IMPORTANT]
-> Quando terminar a estruturação e simulação, me chame no chat. 
-> Mostre-me sua simulação funcionando e prepare-se:
-> **Assim que validar a conclusão de todo o projeto (Progresso: 100%), apresentarei a você o QUIZ DE FIXAÇÃO FINAL!** 
-> Ele testará se você de fato conquistou a maestria do design Event-Driven. Que a Força esteja com você!
+> Quando toda a stack estiver de pé via containers do Compose e você demonstrar a escalabilidade com o scale e o README impecável, me chame no chat compartilhando suas configurações finais e evidências dos testes.
+> 
+> Como mentor, vou lhe ajudar a depurar o build de rede e o startup seguro. **Após validarmos o projeto final, apresentarei a você o Quiz de Fixação Final Interativo com 4 perguntas estratégicas** para certificar sua conquista da maestria no design de mensageria assíncrona! Que a Força esteja com você na reta final!

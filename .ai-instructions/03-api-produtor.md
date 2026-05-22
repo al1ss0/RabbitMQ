@@ -1,17 +1,18 @@
-# 📡 Passo 3/6: API Produtora FastAPI & Publisher Resiliente
+# 📡 Passo 3/6: API Produtora FastAPI & Publisher Resiliente (Conexão Local)
 
-Saudações, Padawan! Agora iniciamos a criação do código da nossa aplicação. Vamos desenvolver o serviço **api-produtor** aplicando os princípios de **SOLID, Clean Code e DDD em camadas**.
+Saudações, Padawan! Agora iniciaremos o desenvolvimento do código da nossa aplicação. Vamos implementar o serviço **api-produtor** aplicando os princípios de **SOLID, Clean Code e DDD Estratégico em camadas**.
 
-A API terá uma única responsabilidade: receber um pedido via HTTP, salvá-lo em nosso repositório local e enfileirá-lo na fila do RabbitMQ de forma confiável e assíncrona.
+Neste passo, você irá programar a API localmente na sua máquina e conectá-la ao container do RabbitMQ Broker que subimos no Passo 2. Isso facilita a depuração imediata e garante um ciclo de feedback rápido antes de empacotarmos tudo em containers de produção.
 
 ---
 
-## 🧠 1. Definindo o Domínio (`api/domain/`)
+## 🧠 1. Camada de Domínio (`api/domain/`)
 
-O domínio define *o que* a nossa aplicação faz e as regras essenciais de negócio. Não há qualquer acoplamento técnico com frameworks aqui.
+O Domínio define *o que* a nossa aplicação faz e suas regras essenciais de negócio. Não há qualquer acoplamento técnico com frameworks aqui.
 
-### 📝 Modelo de Domínio (`api/domain/models.py`)
-Utilize o Pydantic para criar a entidade de negócio garantindo validação de tipos e regras logo na entrada do sistema:
+### 📝 Entidade de Negócio (`api/domain/models.py`)
+Utilize o Pydantic para criar a entidade `Pedido`, garantindo validação de tipos e validações de regras de negócio logo na entrada do sistema:
+
 ```python
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,12 +25,13 @@ class Pedido(BaseModel):
     @classmethod
     def valor_deve_ser_positivo(cls, v: float) -> float:
         if v <= 0:
-            raise ValueError("valor deve ser positivo e maior que zero")
+            raise ValueError("O valor do pedido deve ser maior que zero")
         return v
 ```
 
 ### 📝 Contrato do Repositório (`api/domain/repository.py`)
-Crie uma classe abstrata definindo a interface (contrato) do repositório. Lembre-se: o domínio não se importa se os dados são salvos em PostgreSQL, MongoDB ou memória — ele define apenas o contrato:
+Crie o contrato (interface) abstrato do repositório de persistência. O domínio não sabe e não se importa se os dados serão salvos em memória, arquivo JSON ou PostgreSQL:
+
 ```python
 from abc import ABC, abstractmethod
 from api.domain.models import Pedido
@@ -37,18 +39,38 @@ from api.domain.models import Pedido
 class PedidoRepository(ABC):
     @abstractmethod
     def salvar(self, pedido: Pedido) -> None:
-        """Persiste um pedido no meio de armazenamento."""
+        """Persiste um pedido no meio de armazenamento físico."""
         pass
 ```
 
 ---
 
-## 🛠️ 2. Implementando a Infraestrutura (`api/infra/`)
+## 🛠️ 2. Camada de Infraestrutura (`api/infra/`)
 
-A infraestrutura é onde os detalhes concretos e os drivers tecnológicos (como o Pika para AMQP) ganham vida.
+A infraestrutura é onde os adaptadores de tecnologia concreta (como a conexão de banco físico e a biblioteca Pika para o RabbitMQ) ganham vida.
 
-### 📝 Banco de Dados Local (`api/infra/database.py`)
-Implemente o contrato de domínio persistindo os dados localmente de forma simples (ex: salvando os pedidos em memória e gravando num arquivo JSON local):
+### 📝 Configurações de Ambiente (`api/infra/settings.py`)
+Usamos o `pydantic-settings` para gerenciar variáveis de ambiente de forma segura. O host padrão é `localhost` (para rodar localmente), mas poderá ser facilmente sobrescrito no ambiente Docker:
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    RABBITMQ_HOST: str = "localhost"  # Default para desenvolvimento local
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "guest"
+    RABBITMQ_PASS: str = "guest"
+
+    class Config:
+        env_file = ".env"
+```
+
+> [!NOTE]
+> Lembre-se de adicionar `pydantic-settings` no seu `requirements.txt`.
+
+### 📝 Persistência Local em JSON (`api/infra/database.py`)
+Implementamos o contrato do repositório gravando os dados fisicamente em um arquivo JSON local na pasta `data/` compartilhada:
+
 ```python
 import json
 import os
@@ -73,12 +95,13 @@ class PedidoRepositoryLocal(PedidoRepository):
 ```
 
 ### 📝 Declaração da Topologia AMQP (`api/infra/topology.py`)
-Para manter a infraestrutura de rede robusta e evitar race conditions no RabbitMQ, crie uma classe que declare formalmente a topologia necessária para a aplicação (Exchanges, Queues, DLX e Bindings):
+Criamos um inicializador de rede responsável por declarar de forma resiliente as Exchanges, as Filas, a Dead Letter Exchange (DLX) de falhas e as regras de roteamento (bindings) no Broker:
+
 ```python
 import pika
 
 def declarar_topologia(channel: pika.adapters.blocking_connection.BlockingChannel) -> None:
-    # 1. Declarar a Dead Letter Exchange (DLX) e Fila DLX
+    # 1. Declarar a Dead Letter Exchange (DLX) e Fila DLX para mensagens com erro
     channel.exchange_declare(exchange="dlx_pedidos", exchange_type="fanout", durable=True)
     channel.queue_declare(queue="dlx_pedidos", durable=True)
     channel.queue_bind(exchange="dlx_pedidos", queue="dlx_pedidos")
@@ -92,7 +115,7 @@ def declarar_topologia(channel: pika.adapters.blocking_connection.BlockingChanne
     # 3. Declarar a Exchange Principal
     channel.exchange_declare(exchange="pedidos_exchange", exchange_type="topic", durable=True)
 
-    # 4. Vincular a Fila Principal à Exchange Principal
+    # 4. Vincular a Fila Principal à Exchange Principal (pedidos.*)
     channel.queue_bind(
         exchange="pedidos_exchange",
         queue="pedidos_queue",
@@ -101,7 +124,8 @@ def declarar_topologia(channel: pika.adapters.blocking_connection.BlockingChanne
 ```
 
 ### 📝 Publisher de Mensagens Resiliente (`api/infra/publisher.py`)
-Implemente um publisher de mensagens que utilize a conexão persistente e garanta a entrega usando **Publisher Confirms** do RabbitMQ:
+Implemente o Publisher que realiza a serialização e publica a mensagem de forma durável usando **Publisher Confirms** do RabbitMQ para garantir entrega segura ao Broker:
+
 ```python
 import json
 import logging
@@ -113,7 +137,7 @@ logger = logging.getLogger(__name__)
 class RabbitMQPublisher:
     def __init__(self, channel: pika.adapters.blocking_connection.BlockingChannel):
         self.channel = channel
-        # Habilitar Publisher Confirms para garantir entrega confiável!
+        # Habilita o Publisher Confirms na conexão
         self.channel.confirm_delivery()
 
     def publicar_pedido(self, pedido: Pedido) -> bool:
@@ -125,21 +149,21 @@ class RabbitMQPublisher:
                 routing_key="pedidos.novo",
                 body=body,
                 properties=pika.BasicProperties(
-                    delivery_mode=2  # Torna a mensagem persistente no disco do broker
+                    delivery_mode=2  # Persiste a mensagem no disco do broker
                 )
             )
-            logger.info(f"Pedido {pedido.id} enviado ao broker.")
+            logger.info(f"Pedido {pedido.id} publicado com sucesso.")
             return True
         except pika.exceptions.UnroutableError:
-            logger.error("Mensagem não pôde ser roteada pelo broker.")
+            logger.error(f"Mensagem do pedido {pedido.id} não pôde ser roteada pelo broker.")
             return False
 ```
 
 ---
 
-## ⚡ 3. Orquestrando com o FastAPI (`api/main.py`)
+## ⚡ 3. Orquestração e Ponto de Entrada (`api/main.py`)
 
-No ponto de entrada, implementamos o **Lifespan** para gerenciar a conexão TCP persistente com o RabbitMQ. Abrir e fechar conexões AMQP a cada requisição HTTP esgota rapidamente os recursos do servidor!
+No ponto de entrada, implementamos o **Lifespan** do FastAPI para gerenciar a conexão TCP persistente com o RabbitMQ. Abrir e fechar conexões AMQP a cada requisição HTTP esgota rapidamente os recursos TCP!
 
 ```python
 import logging
@@ -154,11 +178,9 @@ from api.infra.database import PedidoRepositoryLocal
 from api.infra.topology import declarar_topologia
 from api.infra.publisher import RabbitMQPublisher
 
-# Configuração de Logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configurações do Broker
 settings = Settings()
 
 class AppState:
@@ -169,8 +191,8 @@ state = AppState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup: Cria conexão única e declara topologia
-    logger.info("Iniciando conexão AMQP no startup...")
+    # STARTUP: Estabelece conexão única persistente
+    logger.info("Estabelecendo conexão TCP persistente com RabbitMQ...")
     credentials = pika.PlainCredentials(settings.RABBITMQ_USER, settings.RABBITMQ_PASS)
     parameters = pika.ConnectionParameters(
         host=settings.RABBITMQ_HOST,
@@ -180,13 +202,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     state.connection = pika.BlockingConnection(parameters)
     state.channel = state.connection.channel()
     
-    # Declara topologia no startup de forma automatizada
+    # Declara toda a topologia AMQP de forma automatizada
     declarar_topologia(state.channel)
     
-    yield  # A API FastAPI fica escutando requests HTTP dos clientes
+    yield  # A API fica online servindo requisições HTTP
     
-    # Shutdown: Fecha conexões AMQP de forma limpa
-    logger.info("Fechando conexão AMQP no shutdown...")
+    # SHUTDOWN: Fecha conexões de forma limpa e segura
+    logger.info("Fechando conexões AMQP de forma segura...")
     if state.connection and not state.connection.is_closed:
         state.connection.close()
 
@@ -195,38 +217,54 @@ repo = PedidoRepositoryLocal()
 
 def get_publisher() -> RabbitMQPublisher:
     if not state.channel:
-        raise HTTPException(status_code=500, detail="Broker indisponível")
+        raise HTTPException(status_code=500, detail="Broker AMQP indisponível")
     return RabbitMQPublisher(state.channel)
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 @app.post("/pedidos/", status_code=202)
 def criar_pedido(pedido: Pedido, publisher: RabbitMQPublisher = Depends(get_publisher)):
-    # 1. Salvar no repositório local (DDD Domain Model + Repository Pattern)
+    # 1. Persistência de auditoria física no repositório de infraestrutura local
     repo.salvar(pedido)
     
-    # 2. Publicar assincronamente no Broker AMQP
+    # 2. Enfileiramento assíncrono e persistente no Broker
     sucesso = publisher.publicar_pedido(pedido)
     if not sucesso:
-        raise HTTPException(status_code=500, detail="Erro ao publicar pedido no broker")
+        raise HTTPException(status_code=500, detail="Falha crítica ao publicar mensagem no broker")
         
-    return {"mensagem": "Pedido enfileirado", "pedido_id": pedido.id}
+    return {"status": "Pedido Aceito e Enfileirado", "pedido_id": pedido.id}
 ```
 
 ---
 
-## 🛡️ O Selo de Qualidade do Mestre
-> [!IMPORTANT]
-> **Inversão de Controle e SOLID em Prática:**
-> Veja que a rota `POST /pedidos/` utiliza Injeção de Dependências (`Depends(get_publisher)`) para obter o publisher concreto. O repositório concreto `repo` implementa o contrato de domínio. Isso significa que podemos facilmente substituir a persistência JSON por PostgreSQL ou MongoDB alterando apenas um adaptador de infraestrutura, sem encostar em uma única linha da nossa regra de negócio do pedido!
+## 🚀 4. Executando e Testando Localmente
+
+1. Crie o arquivo `requirements.txt` na pasta `api/` contendo:
+   ```text
+   fastapi>=0.110.0
+   uvicorn>=0.28.0
+   pika>=1.3.2
+   pydantic>=2.6.0
+   pydantic-settings>=2.2.0
+   ```
+2. Instale as dependências localmente na sua máquina.
+3. Certifique-se de que o container do RabbitMQ (Passo 2) está rodando.
+4. Execute a API a partir do diretório `api/`:
+   ```bash
+   uvicorn main:app --reload
+   ```
+5. Faça uma requisição POST de teste usando curl ou a ferramenta swagger da API (`http://localhost:8000/docs`):
+   ```bash
+   curl -X POST "http://localhost:8000/pedidos/" \
+        -H "Content-Type: application/json" \
+        -d '{"id": "ped-001", "descricao": "Espada de Treino Jedi", "valor": 150.00}'
+   ```
+6. Acesse o Painel de Gerenciamento do RabbitMQ (`http://localhost:15672`) e verifique que a fila `pedidos_queue` foi criada automaticamente e que existe **1 mensagem** nela aguardando consumo!
 
 ---
 
 ### 🧙‍♂️ Instruções do Mestre:
-Escreva a base da sua API em camadas limpas, crie o lifespan e verifique a robustez do Publisher Confirms.
+Escreva os códigos da sua API organizados em suas devidas pastas de Domínio e Infraestrutura conforme especificado. 
 
 > [!IMPORTANT]
-> Quando terminar a API, chame-me no chat. Mostre-me sua arquitetura e prepare-se: **farei perguntas sobre injeção de dependências e a resiliência do lifespan**. 
-> Após passar por esta provação com sucesso, atualizarei seu progresso para `50% - Passo 4/6: Worker Consumidor`.
+> Quando o seu endpoint `POST /pedidos/` estiver respondendo HTTP 202 com sucesso e você visualizar a mensagem enfileirada no painel do RabbitMQ, compartilhe o código dos seus arquivos comigo no chat.
+> 
+> Como seu mentor, vou ativamente lhe ajudar a depurar o ciclo de conexão local e propor melhorias de Clean Code e SOLID na separação em camadas. **Após validarmos o código, farei 2 a 3 perguntas reflexivas baseadas na injeção de dependência do FastAPI e no papel do Lifespan** antes de avançarmos o seu progresso para `50% - Passo 4/6: Worker Consumidor Pika`.

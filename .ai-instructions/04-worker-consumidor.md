@@ -1,18 +1,20 @@
-# ⚙️ Passo 4/6: Worker Consumidor Resiliente & Tolerância a Falhas
+# ⚙️ Passo 4/6: Worker Consumidor Pika (Conexão Local) & Resiliência AMQP
 
-Saudações, Padawan! A API produtora está completa e enviando mensagens de forma persistente. Agora, nosso desafio é implementar o **worker-consumidor** de forma robusta e resiliente.
+Saudações, Padawan! A API produtora está rodando e publicando pedidos. Agora, nosso desafio é implementar o **worker-consumidor** de forma robusta e resiliente usando a biblioteca `Pika`.
 
 O Worker deve operar seguindo regras rígidas de segurança contra perda de dados:
-1. **Fair Dispatch (`prefetch_count=1`)**: Não sobrecarregar um único worker, distribuindo as mensagens de forma equilibrada em múltiplos consumidores paralelos.
-2. **Acks e Nacks explícitos**: Confirmar mensagens apenas quando processadas com sucesso. Em caso de erro não tratado, rejeitá-las explicitamente para que caiam automaticamente na DLX.
+1. **Fair Dispatch (`prefetch_count=1`)**: Não sobrecarregar um único worker, distribuindo mensagens de forma equilibrada em múltiplos consumidores em paralelo.
+2. **Acks e Nacks explícitos**: Confirmar mensagens (`basic_ack`) apenas quando processadas com sucesso. Em caso de erro não tratado, rejeitá-las explicitamente (`basic_nack(requeue=False)`) para que caiam automaticamente na Dead Letter Exchange (DLX).
 
 ---
 
-## 🧠 1. Domínio do Worker (`worker/domain/`)
+## 🧠 1. Camada de Domínio (`worker/domain/`)
 
-O domínio do worker foca em *como processar* a mensagem que chega e nos contratos de negócio correspondentes.
+O domínio do worker define a lógica de negócio do processamento assíncrono.
 
-### 📝 Modelo do Pedido no Consumidor (`worker/domain/models.py`)
+### 📝 Entidade de Domínio (`worker/domain/models.py`)
+Utilizamos o Pydantic para modelar os dados do pedido consumido:
+
 ```python
 from pydantic import BaseModel
 
@@ -23,7 +25,8 @@ class PedidoConsumido(BaseModel):
 ```
 
 ### 📝 Contrato do Repositório (`worker/domain/repository.py`)
-Define o contrato do worker para gravar o resultado do processamento final do pedido:
+Define a interface para persistir o resultado final do processamento:
+
 ```python
 from abc import ABC, abstractmethod
 from worker.domain.models import PedidoConsumido
@@ -35,8 +38,9 @@ class PedidoProcessadoRepository(ABC):
         pass
 ```
 
-### 📝 Caso de Uso/Handler de Domínio (`worker/domain/handler.py`)
-A regra de negócio e fluxo lógico do que acontece no recebimento de um pedido:
+### 📝 Handler de Negócio (`worker/domain/handler.py`)
+O caso de uso principal do Worker. Ele contém a lógica de processamento e a regra de negócio do domínio:
+
 ```python
 import logging
 from worker.domain.models import PedidoConsumido
@@ -49,26 +53,43 @@ class ProcessarPedidoHandler:
         self.repo = repo
 
     def handle(self, pedido: PedidoConsumido) -> None:
-        logger.info(f"Iniciando processamento do pedido {pedido.id} — {pedido.descricao}")
+        logger.info(f"Iniciando processamento do pedido {pedido.id} — '{pedido.descricao}'")
         
-        # Simulação de regra de negócio do domínio:
-        # Ex: se o pedido for um "Item inválido", simular uma falha grave de negócio para fins educacionais!
+        # Regra de negócio simulada: se a descrição for "item inválido",
+        # simulamos uma falha grave de domínio!
         if pedido.descricao.lower() == "item inválido":
-            raise ValueError("Falha de validação do domínio: este item não pode ser processado!")
+            raise ValueError("Falha de validação do domínio: este item não é elegível para processamento!")
 
-        # Persistir o sucesso
+        # Grava o sucesso do processamento no repositório de infra
         self.repo.salvar_processado(pedido)
-        logger.info(f"Pedido {pedido.id} processado com sucesso.")
+        logger.info(f"Pedido {pedido.id} processado com sucesso!")
 ```
 
 ---
 
-## 🛠️ 2. Infraestrutura do Worker (`worker/infra/`)
+## 🛠️ 2. Camada de Infraestrutura (`worker/infra/`)
 
-A infraestrutura conecta os eventos vindos do RabbitMQ às regras de negócio definidas no Domínio.
+A infraestrutura é onde os drivers tecnológicos conectam as mensagens às regras do domínio.
 
-### 📝 Repositório Concreto de Persistência (`worker/infra/database.py`)
-Salva em um arquivo JSON local os pedidos que foram processados pelo worker:
+### 📝 Configurações de Ambiente (`worker/infra/settings.py`)
+O host padrão do broker é `localhost` (para desenvolvimento local), permitindo sobrescrita de ambiente em produção:
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    RABBITMQ_HOST: str = "localhost"  # Default para desenvolvimento local
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "guest"
+    RABBITMQ_PASS: str = "guest"
+
+    class Config:
+        env_file = ".env"
+```
+
+### 📝 Persistência Local de Processamento (`worker/infra/database.py`)
+Grava os pedidos processados com sucesso pelo worker em um arquivo JSON específico na pasta compartilhada:
+
 ```python
 import json
 import os
@@ -98,7 +119,8 @@ class PedidoProcessadoRepositoryLocal(PedidoProcessadoRepository):
 ```
 
 ### 📝 Consumidor Pika Resiliente (`worker/infra/consumer.py`)
-Implemente o loop de escuta do RabbitMQ que manipula ACKs e NACKs com excelência:
+Gerencia a conexão do consumidor do RabbitMQ garantindo ACKs e NACKs seguros no protocolo AMQP:
+
 ```python
 import json
 import logging
@@ -121,44 +143,46 @@ class RabbitMQConsumer:
 
         # 1. Configurar prefetch_count=1 (Fair Dispatch)
         # Garante que o broker não envie uma nova mensagem a este worker até que ele
-        # termine e envie o ACK da mensagem atual.
+        # envie o ACK correspondente da mensagem anterior.
         self.channel.basic_qos(prefetch_count=1)
 
-        # 2. Registrar a Callback para processamento na fila
+        # 2. Registrar a Callback para consumo na fila
         self.channel.basic_consume(
             queue="pedidos_queue",
             on_message_callback=self._callback,
-            auto_ack=False  # NUNCA use True para evitar perda de dados sob falhas!
+            auto_ack=False  # NUNCA use True em produção sob risco de perda de dados
         )
 
-        logger.info("Worker inicializado. Aguardando mensagens...")
+        logger.info("Worker inicializado com sucesso. Aguardando novos pedidos...")
         self.channel.start_consuming()
 
     def _callback(self, ch, method, properties, body):
         try:
-            # 1. Deserializar a mensagem
+            # 1. Desserialização do payload
             data = json.loads(body.decode())
             pedido = PedidoConsumido(**data)
 
-            # 2. Chamar o Handler de Domínio
+            # 2. Executa o caso de uso no Handler de Domínio
             self.handler.handle(pedido)
 
-            # 3. Sucesso! Enviar basic_ack de confirmação de processamento seguro
+            # 3. Sucesso! Envia basic_ack de confirmação definitiva
             ch.basic_ack(delivery_tag=method.delivery_tag)
+            logger.info(f"ACK enviado para o pedido {pedido.id}.")
             
         except Exception as e:
-            logger.error(f"Erro grave no processamento. Rejeitando mensagem: {str(e)}")
-            # 4. Falha! Enviar basic_nack com requeue=False.
-            # O RabbitMQ encaminhará a mensagem automaticamente para a DLX (dlx_pedidos)
-            # impedindo que ela fique presa num loop infinito na fila principal!
+            logger.error(f"Falha de processamento no Worker: {str(e)}")
+            # 4. Rejeição! Envia basic_nack com requeue=False.
+            # O RabbitMQ removerá a mensagem da fila principal e a encaminhará
+            # automaticamente para a DLX (dlx_pedidos) para auditoria.
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            logger.warning(f"NACK enviado para a mensagem. Redirecionada para DLX.")
 ```
 
 ---
 
 ## ⚡ 3. Arquivo de Entrada (`worker/main.py`)
 
-No arquivo de execução principal, orquestramos a inicialização conectando a Infraestrutura aos Contratos de Domínio:
+No ponto de inicialização, orquestramos a montagem unindo a Infraestrutura aos Contratos de Domínio:
 
 ```python
 import logging
@@ -174,13 +198,9 @@ logger = logging.getLogger(__name__)
 settings = Settings()
 
 def main():
-    # 1. Instanciar Adaptadores de Infra
     repo = PedidoProcessadoRepositoryLocal()
-    
-    # 2. Instanciar Handlers de Domínio (Injeção de Dependência)
     handler = ProcessarPedidoHandler(repo)
     
-    # 3. Configurar Parâmetros do Broker
     credentials = pika.PlainCredentials(settings.RABBITMQ_USER, settings.RABBITMQ_PASS)
     parameters = pika.ConnectionParameters(
         host=settings.RABBITMQ_HOST,
@@ -188,12 +208,11 @@ def main():
         credentials=credentials
     )
     
-    # 4. Iniciar Consumo
     consumer = RabbitMQConsumer(parameters, handler)
     try:
         consumer.iniciar()
     except KeyboardInterrupt:
-        logger.info("Encerrando o worker de forma limpa...")
+        logger.info("Encerrando o worker graciosamente...")
 
 if __name__ == "__main__":
     main()
@@ -201,20 +220,32 @@ if __name__ == "__main__":
 
 ---
 
-## 🛡️ O Selo de Qualidade do Mestre
-> [!WARNING]
-> **O Perigo do `auto_ack=True` e `requeue=True` no Lado Sombrio:**
-> 1. Setar `auto_ack=True` faz o broker remover a mensagem da fila assim que a envia pela rede. Se o worker cair durante o processamento de banco ou CPU, a mensagem é **perdida para sempre**!
-> 2. Enviar um `basic_nack` com `requeue=True` em caso de erro de lógica de dados/validação (como o "Item inválido") faz a mensagem ser devolvida à fila no mesmo instante, reiniciando o loop de erro. Isso cria um loop infinito de consumo de CPU/Logs!
-> 
-> Usar `auto_ack=False` e `requeue=False` em cenários de erro de negócio direciona a mensagem para a DLX, mantendo a stack saudável e auditável.
+## 🚀 4. Executando e validando o Fluxo de Ponta a Ponta
+
+1. Crie o arquivo `requirements.txt` na pasta `worker/` contendo:
+   ```text
+   pika>=1.3.2
+   pydantic>=2.6.0
+   pydantic-settings>=2.2.0
+   ```
+2. Instale as dependências localmente.
+3. Abra um terminal para rodar a API (Passo 3): `uvicorn main:app --reload` (em `api/`).
+4. Abra outro terminal e inicie o Worker (em `worker/`):
+   ```bash
+   python main.py
+   ```
+5. **Cenário de Sucesso**: Envie um pedido válido via `curl` na API:
+   * Verifique o log do Worker: ele deve logar o recebimento, gravar o sucesso em `worker/data/pedidos_processados.json` e emitir o **ACK** no RabbitMQ.
+6. **Cenário de Falha (DLX)**: Envie um pedido com a descrição `"item inválido"`:
+   * O Worker tentará processar, disparará a exceção do domínio, capturará o erro na infraestrutura, emitirá o **NACK** com `requeue=False` e a mensagem sumirá da fila principal.
+   * Verifique no painel do RabbitMQ (`http://localhost:15672`) que a fila `dlx_pedidos` agora possui **1 mensagem** nela!
 
 ---
 
 ### 🧙‍♂️ Instruções do Mestre:
-Escreva a infraestrutura do seu Worker consumidor, configure as callbacks para enviar ACKs e NACKs com precisão cirúrgica e verifique o Fair Dispatch.
+Escreva a infraestrutura do seu Worker, configure as callbacks para gerenciar o ciclo AMQP localmente e teste ambos os cenários (sucesso e falha).
 
 > [!IMPORTANT]
-> Quando concluir a implementação do seu Worker, sinalize para mim no chat. 
-> Prepare-se para ser interrogado sobre: **a diferença prática entre ACKs/NACKs e o comportamento da DLX sob falhas**.
-> Após provar sua maestria, atualizarei seu progresso para `66% - Passo 5/6: Testes Automatizados`.
+> Quando o seu cenário de sucesso gerar o arquivo `pedidos_processados.json` e o cenário de falha enviar a mensagem para a fila do `dlx_pedidos` no broker, compartilhe os códigos e logs comigo.
+> 
+> Como mentor, vou analisar a sua captura de exceções e a robustez do loop. **Após validarmos o código, farei 2 a 3 perguntas reflexivas sobre o perigo do loop infinito de NACK com requeue=True e a importância de auto_ack=False** antes de avançarmos seu progresso para `66% - Passo 5/6: Testes Automatizados`.

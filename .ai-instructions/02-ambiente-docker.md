@@ -1,19 +1,39 @@
-# 🐳 Passo 2/6: Ambiente de Orquestração com Docker Compose e RabbitMQ
+# 🐳 Passo 2/6: Ambiente de Orquestração — Setup do Workspace & RabbitMQ Broker
 
-Saudações, Padawan! Agora que você dominou a arquitetura em camadas e o fluxo da nossa stack de mensageria, o próximo passo é criar o ambiente de execução e orquestração usando **Docker** e **Docker Compose**.
+Saudações, Padawan! Agora que você dominou os alicerces conceituais e a arquitetura em camadas do nosso sistema, iniciaremos a jornada prática.
 
-Nossa stack é composta por três serviços principais que precisam rodar de forma isolada, mas perfeitamente comunicáveis em rede:
-1. **rabbitmq-broker**: O intermediário de mensagens (RabbitMQ com plugin de gerenciamento habilitado).
-2. **api-produtor**: A aplicação web (FastAPI) que produz e enfileira pedidos na fila.
-3. **worker-consumidor**: O worker Python (Pika consumer) que consome e processa pedidos.
+Neste passo, nosso objetivo é preparar a estrutura física de diretórios do nosso projeto e subir o **RabbitMQ Broker** em container de forma isolada. Isso garantirá que tenhamos um servidor de mensageria ativo na sua máquina local pronto para aceitar conexões TCP enquanto desenvolvemos a API e o Worker nos próximos passos.
 
 ---
 
-## 🏗️ Configurando a Topologia com Docker Compose
+## 🏗️ 1. Preparando a Estrutura de Diretórios
 
-Você deve criar na raiz do seu projeto um arquivo `docker-compose.yml` altamente resiliente. É crucial configurar um **Healthcheck** para o RabbitMQ, garantindo que a API e o Worker iniciem apenas após o Broker estar 100% pronto para aceitar conexões TCP.
+Antes de escrever qualquer código ou configuração Docker, crie a seguinte estrutura física de diretórios no seu espaço de trabalho. Ela reflete a separação estrita de escopos da nossa stack:
 
-Aqui está o blueprint arquitetural do seu `docker-compose.yml`:
+```
+rabbitmq-stack/
+├── api/                  # 📡 Código-fonte da API FastAPI
+│   ├── domain/           # Camada de Domínio (Contratos e Modelos)
+│   └── infra/            # Camada de Infraestrutura (Implementações concretas)
+├── worker/               # ⚙️ Código-fonte do Worker Consumidor Pika
+│   ├── domain/           # Camada de Domínio do Worker
+│   └── infra/            # Camada de Infraestrutura do Worker
+├── data/                 # 📂 Pasta local para persistência de dados físicos (banco JSON)
+└── docker-compose.yml    # 🐳 Orquestração do nosso ambiente Docker
+```
+
+> [!TIP]
+> Crie as pastas vazias primeiro. Não se preocupe em criar arquivos de código Python (`.py`) ainda. Faremos isso de forma guiada no momento certo.
+
+---
+
+## 🐳 2. O Docker Compose do Broker
+
+Na raiz do seu workspace (`rabbitmq-stack/`), crie o arquivo `docker-compose.yml` focado em expor o RabbitMQ de maneira robusta para desenvolvimento local.
+
+Nesta etapa, o compose irá conter **apenas o serviço do RabbitMQ Broker**. Não adicionaremos os serviços da API ou do Worker ainda, pois os códigos de produção deles não existem e o build falharia.
+
+Crie o arquivo [docker-compose.yml](file:///docker-compose.yml) com o seguinte blueprint:
 
 ```yaml
 version: '3.8'
@@ -23,50 +43,17 @@ services:
     image: rabbitmq:3.12-management-alpine
     container_name: rabbitmq-broker
     ports:
-      - "5672:5672"     # Porta AMQP do Broker
+      - "5672:5672"     # Porta padrão do protocolo AMQP (para conexões TCP da nossa app)
       - "15672:15672"   # Porta do painel de administração web (Management Console)
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
     healthcheck:
+      # Verifica se o broker está totalmente ativo e pronto para conexões AMQP
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - rabbitmq-network
-
-  api-produtor:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    container_name: api-produtor
-    ports:
-      - "8000:8000"
-    environment:
-      - RABBITMQ_HOST=rabbitmq-broker
-      - RABBITMQ_PORT=5672
-      - RABBITMQ_USER=guest
-      - RABBITMQ_PASS=guest
-    depends_on:
-      rabbitmq-broker:
-        condition: service_healthy
-    networks:
-      - rabbitmq-network
-
-  worker-consumidor:
-    build:
-      context: ./worker
-      dockerfile: Dockerfile
-    container_name: worker-consumidor
-    environment:
-      - RABBITMQ_HOST=rabbitmq-broker
-      - RABBITMQ_PORT=5672
-      - RABBITMQ_USER=guest
-      - RABBITMQ_PASS=guest
-    depends_on:
-      rabbitmq-broker:
-        condition: service_healthy
     networks:
       - rabbitmq-network
 
@@ -77,56 +64,27 @@ networks:
 
 ---
 
-## 📦 Construindo as Imagens Docker (Dockerfiles)
+## ⚡ 3. Subindo o Broker e Validando
 
-Cada serviço Python (`api` e `worker`) deve conter o seu respectivo `Dockerfile` otimizado para produção. Use imagens Python baseadas em Alpine ou Slim para otimizar o tamanho e velocidade da stack.
+Com a estrutura de pastas criada e o `docker-compose.yml` salvo, abra o seu terminal na raiz do projeto e execute:
 
-### 📝 Dockerfile da API (`api/Dockerfile`)
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# Instalação de dependências via uv ou pip
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8000
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```bash
+docker compose up -d rabbitmq-broker
 ```
 
-### 📝 Dockerfile do Worker (`worker/Dockerfile`)
-```dockerfile
-FROM python:3.12-slim
+Este comando fará o download da imagem leve baseada em Alpine e iniciará o container do broker em segundo plano.
 
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python", "main.py"]
-```
-
----
-
-## 🛡️ O Segredo da Resiliência do Mestre
-> [!CAUTION]
-> **O erro clássico do startup precipitado:**
-> Dizer apenas `depends_on: [rabbitmq-broker]` faz com que o Docker Compose inicie a API e o Worker assim que o container do RabbitMQ é criado. No entanto, o motor do RabbitMQ leva cerca de 20 a 30 segundos para inicializar sua JVM e portas de escuta internas.
-> 
-> A diretiva `condition: service_healthy` combinada com o comando `rabbitmq-diagnostics` no healthcheck impede falhas prematuras de conexão TCP recusada (`ConnectionRefusedError`) nas nossas aplicações, mantendo a stack limpa e estável.
+### 🔍 Como validar que está tudo funcionando:
+1. **Acesse o Management Console**: Abra o seu navegador e vá em [http://localhost:15672](http://localhost:15672).
+2. **Faça o Login**: Utilize o usuário `guest` e a senha `guest` configurados no compose.
+3. **Monitore o Healthcheck**: Execute o comando `docker ps` no seu terminal e verifique se o container `rabbitmq-broker` exibe o status `(healthy)` após alguns segundos de inicialização.
 
 ---
 
 ### 🧙‍♂️ Instruções do Mestre:
-Implemente os arquivos de orquestração Docker conforme a especificação e verifique se a topologia de rede está correta. 
+Prepare a estrutura de diretórios e crie o `docker-compose.yml` inicial conforme as especificações. 
 
 > [!IMPORTANT]
-> Quando finalizar, sinalize para mim (o **Jedi da Mensageria**) no chat informando os detalhes da sua implementação. 
-> Prepare-se para responder a perguntas reflexivas sobre o comportamento do docker compose e o startup seguro. 
-> Após responder satisfatoriamente, atualizarei seu progresso para `33% - Passo 3/6: API Produtora FastAPI`.
+> Quando a estrutura estiver montada e o RabbitMQ Broker estiver rodando localmente com status `(healthy)`, compartilhe comigo (o **Jedi da Mensageria** no chat) a árvore de diretórios que você criou e a confirmação de que acessou o painel de administração.
+> 
+> Como mentor, vou lhe auxiliar na estrutura inicial de pastas e conferir suas portas. **Após a sua validação, farei 2 a 3 perguntas reflexivas sobre redes no Docker e o papel do Healthcheck no Broker** antes de avançarmos o seu progresso para `33% - Passo 3/6: API Produtora FastAPI`.
