@@ -10,16 +10,15 @@ Este repositório foi montado como uma **Jornada de Aprendizado Pedagógica (#an
 
 ## 🏗️ Estrutura do ambiente
 
-A verdadeira "mágica" arquitetural e pedagógica não está solta na raiz, mas sim encapsulada nestes arquivos e diretórios essenciais:
+A verdadeira "mágica" arquitetural e pedagógica está encapsulada em nossa estrutura de arquivos:
 
 ```text
 comp-dist-rabbitmq-ai-challenge/
-├── AGENTS.md                  # 🧙‍♂️ Orquestrador: Arquivo raiz que converte a IA no "Jedi da Mensageria".
-├── .ai-instructions/          # 🧠 Cérebro do Jedi: Regras, arquitetura e restrições.
+├── AGENTS.md                  # 🧙‍♂️ Orquestrador: Arquivo raiz que define o comportamento e a persona da IA.
 └── README.md                  # 📖 Este arquivo, contendo as instruções iniciais e de uso.
 ```
 
-O diretório `.ai-instructions/` contém o gabarito arquitetural do produtor (API), do consumidor (Worker) e do ambiente (Docker). **Evite inspecionar** diretamente estes arquivos se desejar ter a experiência educacional completa de ser guiado e desafiado pela IA.
+A IA de mentoria possui em seu conhecimento interno todo o roteiro pedagógico, gabarito arquitetural e validações necessárias para guiar o Padawan de forma socrática. Deixe-se guiar pela sabedoria do Mestre Jedi!
 
 ---
 
