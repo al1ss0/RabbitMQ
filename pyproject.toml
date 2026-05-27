@@ -24,6 +24,7 @@ dev = [
 lint      = "ruff check . && ruff format --check ."
 api-dev   = "uvicorn api.main:app --reload --host 0.0.0.0 --port 8000"
 api-start = "uvicorn api.main:app --host 0.0.0.0 --port 8000"
+worker-start = "python -m worker.main"
 logs-api      = "docker logs api-produtor -f"
 logs-worker   = "docker logs worker-consumidor -f"
 logs-rabbitmq = "docker logs rabbitmq-broker -f"

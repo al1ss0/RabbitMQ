@@ -1,6 +1,7 @@
 import json
 import pika
 from worker.infra.consumer import handle_message
+from worker.infra.database import init_db
 
 
 def on_message(ch, method, properties, body):
@@ -13,6 +14,7 @@ def on_message(ch, method, properties, body):
 
 
 def main() -> None:
+    init_db()
     params = pika.ConnectionParameters(host="localhost")
     conn = pika.BlockingConnection(params)
     channel = conn.channel()
