@@ -10,8 +10,8 @@ DB_PATH = BASE_DIR / "data" / "pedidos.db"
 SQL_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS pedidos (
     id TEXT PRIMARY KEY,
-    item TEXT NOT NULL,
-    quantidade INTEGER NOT NULL,
+    descricao TEXT NOT NULL,
+    valor REAL NOT NULL,
     status TEXT NOT NULL,
     received_at TEXT NOT NULL DEFAULT (datetime('now')),
     processed_at TEXT
@@ -38,14 +38,14 @@ def save_pedido(payload: dict[str, Any], status: str = "processado") -> None:
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO pedidos (id, item, quantidade, status, processed_at)
+            INSERT INTO pedidos (id, descricao, valor, status, processed_at)
             VALUES (?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
-                item = excluded.item,
-                quantidade = excluded.quantidade,
+                descricao = excluded.descricao,
+                valor = excluded.valor,
                 status = excluded.status,
                 processed_at = excluded.processed_at
             """,
-            (payload["id"], payload["item"], payload["quantidade"], status),
+            (payload["id"], payload["descricao"], payload["valor"], status),
         )
         connection.commit()

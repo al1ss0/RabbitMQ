@@ -10,8 +10,8 @@ DB_PATH = BASE_DIR / "data" / "pedidos.db"
 SQL_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS pedidos (
     id TEXT PRIMARY KEY,
-    item TEXT NOT NULL,
-    quantidade INTEGER NOT NULL,
+    descricao TEXT NOT NULL,
+    valor REAL NOT NULL,
     status TEXT NOT NULL,
     received_at TEXT NOT NULL DEFAULT (datetime('now')),
     processed_at TEXT
@@ -37,6 +37,6 @@ def init_db() -> None:
 def list_pedidos() -> list[dict[str, Any]]:
     with get_connection() as connection:
         cursor = connection.execute(
-            "SELECT id, item, quantidade, status, received_at, processed_at FROM pedidos ORDER BY received_at DESC"
+            "SELECT id, descricao, valor, status, received_at, processed_at FROM pedidos ORDER BY received_at DESC"
         )
         return [dict(row) for row in cursor.fetchall()]

@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import json
 import pika
 from fastapi import FastAPI, Request, HTTPException
 
@@ -31,7 +30,7 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/pedidos", status_code=202)
 def criar_pedido(pedido: Pedido, request: Request):
     publisher: Publisher = request.app.state.publisher
-    ok = publisher.publish("pedidos_exchange", routing_key="pedidos", body=pedido.model_dump())
+    ok = publisher.publish("pedidos_exchange", routing_key="pedidos.novo", body=pedido.model_dump())
     if not ok:
         raise HTTPException(status_code=500, detail="Falha ao publicar mensagem")
     return {"status": "accepted"}
