@@ -35,6 +35,7 @@ clean     = "find . -type d -name __pycache__ -exec rm -rf {} + && find . -name 
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "unit: testes unitários puros sem I/O real",
     "integration: testes que exercitam I/O real (SQLite, filesystem)",
