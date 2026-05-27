@@ -1,7 +1,7 @@
-import json
 import pika
 from worker.infra.consumer import handle_message
 from worker.infra.database import init_db
+from worker.infra.topology import setup_topology
 
 
 def on_message(ch, method, properties, body):
@@ -18,8 +18,7 @@ def main() -> None:
     params = pika.ConnectionParameters(host="localhost")
     conn = pika.BlockingConnection(params)
     channel = conn.channel()
-    # topology is expected to be declared by the producer, but ensure queue exists
-    channel.queue_declare(queue="pedidos_queue", durable=True)
+    setup_topology(channel)
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue="pedidos_queue", on_message_callback=on_message)
     print("[worker] aguardando mensagens...")

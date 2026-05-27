@@ -1,7 +1,7 @@
 import pika
 
 
-def declare_topology(channel: pika.adapters.blocking_connection.BlockingChannel) -> None:
+def setup_topology(channel: pika.adapters.blocking_connection.BlockingChannel) -> None:
     channel.exchange_declare(
         exchange="pedidos_exchange",
         exchange_type="topic",
