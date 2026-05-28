@@ -34,7 +34,6 @@
     build:
       context: .
       dockerfile: worker/Dockerfile
-    container_name: worker-consumidor
     environment:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_PORT=5672
