@@ -1,0 +1,99 @@
+### Variáveis
+@api = http://localhost:8000
+@rmq = http://localhost:15672/api
+@rmq_auth = Basic guest guest
+
+# =============================================================================
+# API
+# =============================================================================
+
+### Health
+GET {{api}}/health
+
+### Pedido válido (HTTP 202 - Aceito e Enfileirado)
+POST {{api}}/pedidos/
+Content-Type: application/json
+
+{
+  "id": "1",
+  "descricao": "Notebook ASUS",
+  "valor": 3500.0
+}
+
+###
+
+### Pedido com valor inválido (→ HTTP 422 - Rejeitado no Pydantic)
+POST {{api}}/pedidos/
+Content-Type: application/json
+
+{
+  "id": "2",
+  "descricao": "Item inválido",
+  "valor": -10.0
+}
+
+###
+
+### Publicar 3 pedidos em sequência (teste de persistência / fair dispatch)
+POST {{api}}/pedidos/
+Content-Type: application/json
+
+{
+  "id": "3",
+  "descricao": "Teclado Mecânico",
+  "valor": 450.0
+}
+
+###
+
+POST {{api}}/pedidos/
+Content-Type: application/json
+
+{
+  "id": "4",
+  "descricao": "Monitor 4K",
+  "valor": 1800.0
+}
+
+###
+
+POST {{api}}/pedidos/
+Content-Type: application/json
+
+{
+  "id": "5",
+  "descricao": "Headset Gamer",
+  "valor": 320.0
+}
+
+# =============================================================================
+# RabbitMQ Management API
+# =============================================================================
+
+### Visão geral das filas
+GET {{rmq}}/queues
+Authorization: {{rmq_auth}}
+
+###
+
+### Estado da fila principal
+GET {{rmq}}/queues/%2F/pedidos_queue
+Authorization: {{rmq_auth}}
+
+###
+
+### Estado da Dead Letter Queue
+GET {{rmq}}/queues/%2F/dlx_pedidos
+Authorization: {{rmq_auth}}
+
+###
+
+### Exchanges declaradas
+GET {{rmq}}/exchanges
+Authorization: {{rmq_auth}}
+
+###
+
+### Bindings da fila principal
+GET {{rmq}}/bindings/%2F/e/pedidos_exchange/q/pedidos_queue
+Authorization: {{rmq_auth}}

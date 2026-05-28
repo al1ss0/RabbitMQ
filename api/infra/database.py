@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DB_PATH = BASE_DIR / "data" / "pedidos.db"
+DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "data" / "pedidos.db")))
 
 SQL_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS pedidos (

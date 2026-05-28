@@ -1,13 +1,51 @@
-services:
+﻿services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq-broker
     ports:
-      - "5672:5672"     # Porta padrão do protocolo AMQP (para conexões da nossa app)
-      - "15672:15672"   # Porta do painel de administração web (Management Console)
+      - "5672:5672"
+      - "15672:15672"
     healthcheck:
-      # Verifica se o broker está totalmente ativo e respondendo
-      test: rabbitmq-diagnostics -q ping
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  api_produtor:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: api-produtor
+    ports:
+      - "8000:8000"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - DB_PATH=/app/data/pedidos.db
+    volumes:
+      - pedidos_data:/app/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  worker_consumidor:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: worker-consumidor
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - DB_PATH=/app/data/pedidos.db
+    volumes:
+      - pedidos_data:/app/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  pedidos_data:
